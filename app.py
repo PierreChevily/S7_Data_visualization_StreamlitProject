@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 st.set_page_config(
     page_title="Data Storytelling IRVE",
@@ -12,12 +11,12 @@ st.set_page_config(
 def load_data(csv_path):
     # Charger les données
     try:
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, low_memory=False)
     except FileNotFoundError:
         st.error(f"Erreur : Le fichier '{csv_path}' est introuvable. Assurez-vous qu'il est dans le bon dossier.")
         return pd.DataFrame()
 
-    clean_data(df)
+    df = clean_data(df)
     return df
 
 def clean_location(df):
@@ -28,21 +27,54 @@ def clean_location(df):
 
     # On supprime les lignes où la géolocalisation est manquante
     df.dropna(subset=['lat', 'lon'], inplace=True)
+
+    # On s'assure que ce sont des nombres
+    df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
+    df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
+    df.dropna(subset=['lat', 'lon'], inplace=True)
     return df
 
 def clean_numerical_data(df):
     df['puissance_nominale'] = pd.to_numeric(df['puissance_nominale'], errors='coerce')
     df['nbre_pdc'] = pd.to_numeric(df['nbre_pdc'], errors='coerce')
+
+    if not df['puissance_nominale'].empty:
+        p_999 = df['puissance_nominale'].quantile(0.999)
+        # On garde les lignes sous le 99ᵉ percentile OU celles où la puissance est NaN
+        df = df[(df['puissance_nominale'] <= p_999) | (df['puissance_nominale'].isna())].copy()
+
+    return df
+
+def clean_text_data(df):
+    # On remplit les NaNs, on enlève les espaces et on met en majuscules
+    df['nom_operateur'] = df['nom_operateur'].fillna('Inconnu')
+    df['nom_operateur'] = df['nom_operateur'].astype(str).str.strip().str.upper()
+    return df
+
+def clean_boolean_data(df):
+    # On convertit tout en string pour éviter les problèmes de type
+    df['gratuit'] = df['gratuit'].astype(str).str.strip().str.lower()
+
+    mapping = {
+        'true': 'Oui',
+        '1': 'Oui',
+        'oui': 'Oui',
+        'false': 'Non',
+        '0': 'Non',
+        'non': 'Non'
+    }
+
+    df['gratuit'] = df['gratuit'].map(mapping)
+    df['gratuit'] = df['gratuit'].fillna('Inconnu')
     return df
 
 def clean_data(df):
-    clean_location(df)
-    clean_numerical_data(df)
+    df = clean_location(df)
+    df = clean_numerical_data(df)
+    df = clean_text_data(df)
+    df = clean_boolean_data(df)
 
-    # Clean boolean data
-    df['gratuit'] = df['gratuit'].map({True: 'Oui', False: 'Non', np.nan: 'Inconnu'})
-
-    # Clean date data
+    # Nettoyage des dates
     df['date_mise_en_service'] = pd.to_datetime(df['date_mise_en_service'], errors='coerce')
     return df
 
@@ -60,6 +92,13 @@ with st.sidebar:
 
     # Filtre 1 : Opérateur (Multi-sélection)
     all_operators = sorted(data['nom_operateur'].dropna().unique())
+    select_all_operators = st.checkbox("Sélectionner tous les opérateurs", value=True)
+
+    if select_all_operators:
+        default_ops = all_operators
+    else:
+        default_ops = []
+
     selected_operators = st.multiselect(
         "Opérateur(s)",
         options=all_operators,
@@ -140,7 +179,16 @@ with col1:
     if df_filtered.empty:
         st.warning("Aucune donnée à afficher sur la carte pour les filtres sélectionnés.")
     else:
-        st.map(df_filtered[['lat', 'lon']], zoom=5)
+        # On analyse uniquement les données de la France métropolitaine et alentours
+        df_map = df_filtered[
+            (df_filtered['lat'].between(40, 52)) &
+            (df_filtered['lon'].between(-5, 10))
+        ]
+
+        if df_map.empty:
+            st.warning("Aucune donnée géolocalisée valide pour les filtres sélectionnés.")
+        else:
+            st.map(df_map, zoom=5, latitude=df_map['lat'].mean(), longitude=df_map['lon'].mean())
 
 with col2:
     st.subheader("Top 5 Opérateurs")
